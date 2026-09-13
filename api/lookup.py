@@ -1,24 +1,22 @@
 """
 Vercel Serverless Function: /api/lookup
 -----------------------------------------
-v4 Aenderungen (auf Nutzerfeedback):
-1. FLUGNUMMER-FORMAT: SimBrief liefert den ICAO-Airline-Code (z.B. "DLH" fuer
-   Lufthansa -> "DLH1788"). AeroDataBox / oeffentliche Flugsuchen laufen aber
-   ueberwiegend ueber den IATA-Code (z.B. "LH" -> "LH1788"). Es wird jetzt eine
-   Umwandlungstabelle gaengiger Airlines genutzt UND, falls keine Mapping-
-   Eintrag existiert oder die IATA-Abfrage leer bleibt, zusaetzlich mit der
-   urspruenglichen ICAO-Variante nachgefragt (Fallback-Kette).
-2. TEIL-ERGEBNISSE STATT ALLES-ODER-NICHTS: Bisher fuehrte ein Fehlschlag bei
-   AeroDataBox (z.B. "keine Daten gefunden") dazu, dass GAR NICHTS angezeigt
-   wurde - obwohl der SimBrief-Flugplan selbst voellig valide war. Jetzt wird
-   der SimBrief-Plan IMMER zurueckgegeben; AeroDataBox-Fehler werden separat
-   als "ground_info_error" mitgeliefert, das Frontend kann den Rest trotzdem
-   darstellen.
-3. MEHRERE TAGE / MEHRERE GATES: Neuer Parameter "range_days" (Default 4).
-   Es wird ueber den Zeitraum-Endpoint /flights/number/{nummer}/{from}/{to}
-   abgefragt, um Gates der letzten N Tage zu sammeln (fuer wiederkehrende
-   Flugnummern wie DLH1788, die taeglich fliegen). Alle Treffer mit Datum,
-   Terminal und Gate werden als Liste zurueckgegeben, nicht nur der neueste.
+v5 Aenderungen (auf Nutzerfeedback zu fehlenden Gate-Daten):
+- AeroDataBox bietet KEINEN echten "Company Stands"-Endpoint (feste
+  Standard-Parkposition pro Airline). Das Gate-Feld ist laut offizieller
+  Spezifikation an eine konkrete Flugbewegung gebunden, nicht an eine
+  Airline-Standardzuweisung.
+- Stattdessen wird jetzt zusaetzlich der FIDS-Endpoint genutzt:
+  /flights/airports/icao/{airport}/{von}/{bis}
+  Das ist dieselbe Datenquelle, mit der Flughaefen ihre eigenen Abflug-/
+  Ankunftstafeln fuettern - haeufig zuverlaessiger fuer Gate-Daten als die
+  globale Flugnummer-Suche, weil hier direkt das Board des Flughafens
+  abgefragt und nach unserer Flugnummer gefiltert wird.
+- Ablauf: zuerst globale Flugnummer-Suche (schneller, weniger Units),
+  wenn das nichts liefert -> FIDS-Fallback ueber den Abflughafen.
+
+Weiterhin: IATA/ICAO-Flugnummer-Fallback, SimBrief-Daten werden immer
+angezeigt (auch ohne Gate-Treffer), robuste Typbehandlung (_d/_l).
 
 WICHTIG: RAPIDAPI_KEY wird als Vercel Environment Variable gesetzt,
 ist serverseitig und landet NIE im Browser-Bundle.
@@ -37,11 +35,6 @@ RAPIDAPI_HOST = "aerodatabox.p.rapidapi.com"
 SIMBRIEF_URL = "https://www.simbrief.com/api/xml.fetcher.php"
 ADB_BASE = "https://aerodatabox.p.rapidapi.com"
 
-# Gaengige Umwandlung ICAO-Airline-Code (3 Buchstaben, von SimBrief) ->
-# IATA-Airline-Code (2 Zeichen, von AeroDataBox/oeffentlichen Quellen erwartet).
-# Nicht vollstaendig, deckt aber die haeufigsten in SimBrief/VA-Kontext ab.
-# Wird ergaenzt um einen generischen Fallback: bei unbekanntem ICAO-Code wird
-# einfach mit der ICAO-Variante selbst weitergemacht.
 ICAO_TO_IATA = {
     "DLH": "LH", "CFG": "DE", "GEC": "4Y", "EWG": "EW", "AUA": "OS",
     "SWR": "LX", "BEL": "SN", "KLM": "KL", "BAW": "BA", "AFR": "AF",
@@ -66,7 +59,6 @@ class UpstreamError(Exception):
 
 
 def _d(value):
-    """Gibt IMMER ein dict zurueck, egal ob SimBrief dict/Liste/None liefert."""
     if isinstance(value, dict):
         return value
     if isinstance(value, list):
@@ -77,7 +69,6 @@ def _d(value):
 
 
 def _l(value):
-    """Gibt IMMER eine Liste zurueck."""
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
@@ -126,10 +117,6 @@ def _seconds_to_hhmm(seconds):
 
 
 def build_flight_number_candidates(icao_airline, flight_num_only):
-    """Erzeugt eine priorisierte Liste moeglicher Flugnummer-Formate,
-    da SimBrief den ICAO-Code liefert, aber AeroDataBox meist den
-    IATA-Code erwartet. Reihenfolge: IATA-Mapping zuerst (haeufigster
-    Treffer), dann die urspruengliche ICAO-Variante als Fallback."""
     candidates = []
     icao_airline = (icao_airline or "").strip().upper()
     flight_num_only = (flight_num_only or "").strip()
@@ -147,8 +134,6 @@ def build_flight_number_candidates(icao_airline, flight_num_only):
 
 
 def fetch_simbrief_plan(username):
-    """Holt den SimBrief-Flugplan. Liefert alle moeglichen Flugnummer-Formate
-    (IATA bevorzugt, ICAO als Fallback) sowie zahlreiche weitere Flugplandetails."""
     if not username or not username.strip():
         raise UpstreamError("SimBrief-Username fehlt.", 400)
 
@@ -263,11 +248,6 @@ def fetch_simbrief_plan(username):
 
 
 def fetch_flights_range(flight_number, from_local, to_local):
-    """Fragt AeroDataBox ueber den Zeitraum-Endpoint ab:
-    /flights/number/{nummer}/{fromLocal}/{toLocal}
-    Liefert eine Liste aller in diesem Zeitraum gefundenen Fluege mit dieser
-    Nummer (z.B. die letzten 4 Tage), damit mehrere Gates/Terminals ueber
-    verschiedene Tage angezeigt werden koennen."""
     if not RAPIDAPI_KEY:
         raise UpstreamError("Kein RAPIDAPI_KEY in den Vercel Env-Vars konfiguriert.", 500)
 
@@ -288,17 +268,10 @@ def fetch_flights_range(flight_number, from_local, to_local):
         )
     if status == 200 and data:
         return data if isinstance(data, list) else [data]
-    if status == 404:
-        return []
-    if status not in (200,):
-        return []
-
     return []
 
 
 def fetch_flight_status_single(flight_number, departure_date_utc=None):
-    """Einzeltagsabfrage als letzter Fallback, falls die Zeitraum-Abfrage
-    aus irgendeinem Grund nichts liefert."""
     if not RAPIDAPI_KEY:
         raise UpstreamError("Kein RAPIDAPI_KEY in den Vercel Env-Vars konfiguriert.", 500)
 
@@ -323,11 +296,68 @@ def fetch_flight_status_single(flight_number, departure_date_utc=None):
     return []
 
 
+def fetch_airport_fids(airport_icao, from_local, to_local, direction="Departure"):
+    """FIDS-Endpoint: fragt direkt beim Flughafen alle Abfluege/Ankuenfte in
+    einem Zeitfenster ab (dieselbe Datenquelle, mit der Flughaefen ihre
+    eigenen Anzeigetafeln fuettern). Oft zuverlaessiger fuer Gate-Daten als
+    die globale Flugnummer-Suche."""
+    if not RAPIDAPI_KEY or not airport_icao:
+        return []
+
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_HOST,
+    }
+    query = (
+        f"withLeg=false&direction={direction}&withCancelled=true"
+        f"&withCodeshared=true&withCargo=false&withPrivate=false&withLocation=false"
+    )
+    url = f"{ADB_BASE}/flights/airports/icao/{airport_icao}/{from_local}/{to_local}?{query}"
+
+    status, data = _get_json(url, headers=headers)
+    if status != 200 or not data:
+        return []
+
+    departures = _l(_d(data).get("departures"))
+    arrivals = _l(_d(data).get("arrivals"))
+    return departures + arrivals
+
+
+def find_gate_via_fids(flight_number_candidates, origin_icao, destination_icao, range_days=4):
+    """Fallback-Gate-Ermittlung ueber die FIDS-Abflugtafel des Abflughafens,
+    gefiltert auf unsere Flugnummer-Kandidaten und die Zielroute."""
+    today = datetime.now(timezone.utc).date()
+    candidates_upper = [c.upper() for c in flight_number_candidates]
+    matches = []
+
+    for day_offset in range(range_days):
+        day = today - timedelta(days=day_offset)
+        from_local = day.strftime("%Y-%m-%dT00:00")
+        to_local = day.strftime("%Y-%m-%dT23:59")
+
+        dep_flights = fetch_airport_fids(origin_icao, from_local, to_local, direction="Departure")
+        for f in dep_flights:
+            if not isinstance(f, dict):
+                continue
+            number = str(f.get("number") or "").replace(" ", "").upper()
+            if number in candidates_upper:
+                arr_airport = _d(_d(f.get("arrival")).get("airport"))
+                if arr_airport.get("icao") == destination_icao:
+                    matches.append(f)
+
+        if matches:
+            break
+
+    return matches
+
+
 def collect_gate_history(flight_number_candidates, origin_icao, destination_icao, range_days=4):
-    """Sammelt Gate/Terminal-Infos der letzten `range_days` Tage ueber alle
-    Flugnummer-Kandidaten (IATA zuerst, dann ICAO). Gibt eine Liste von
-    Tages-Ergebnissen zurueck (neuestes zuerst), gefiltert auf die Route
-    aus dem SimBrief-Plan."""
+    """Sammelt Gate/Terminal-Infos ueber mehrere Strategien, in dieser
+    Reihenfolge (jede naechste Stufe nur, wenn die vorherige nichts liefert):
+    1. Globale Flugnummer-Zeitraum-Suche (/flights/number/.../von/bis)
+    2. Globale Flugnummer-Einzelabfrage (aktuell/naechste Fluege)
+    3. FIDS-Abflugtafel des Abflughafens (oft zuverlaessiger fuer Gates)
+    """
     today = datetime.now(timezone.utc).date()
     from_local = (today - timedelta(days=range_days - 1)).strftime("%Y-%m-%dT00:00")
     to_local = today.strftime("%Y-%m-%dT23:59")
@@ -341,7 +371,6 @@ def collect_gate_history(flight_number_candidates, origin_icao, destination_icao
         except UpstreamError as exc:
             last_error = exc
             continue
-
         for f in flights:
             if not isinstance(f, dict):
                 continue
@@ -349,12 +378,10 @@ def collect_gate_history(flight_number_candidates, origin_icao, destination_icao
             arr_airport = _d(_d(f.get("arrival")).get("airport"))
             if dep_airport.get("icao") == origin_icao and arr_airport.get("icao") == destination_icao:
                 all_matches.append(f)
-
         if all_matches:
-            break  # Sobald ein Format Treffer liefert, weitere Kandidaten nicht mehr noetig
+            break
 
     if not all_matches:
-        # Letzter Versuch: Einzeltagsabfrage (aktuell/naechste Fluege) statt Zeitraum
         for candidate in flight_number_candidates:
             try:
                 flights = fetch_flight_status_single(candidate)
@@ -370,6 +397,12 @@ def collect_gate_history(flight_number_candidates, origin_icao, destination_icao
                     all_matches.append(f)
             if all_matches:
                 break
+
+    if not all_matches:
+        try:
+            all_matches = find_gate_via_fids(flight_number_candidates, origin_icao, destination_icao, range_days)
+        except UpstreamError as exc:
+            last_error = exc
 
     if not all_matches and last_error:
         raise last_error
@@ -426,10 +459,7 @@ class handler(BaseHTTPRequestHandler):
             range_days = 4
 
         response_body = {}
-        status_code = 200
 
-        # SimBrief-Plan: wird IMMER versucht und bei Erfolg IMMER zurueckgegeben,
-        # unabhaengig davon ob AeroDataBox danach Daten liefert oder nicht.
         try:
             plan = fetch_simbrief_plan(username)
             response_body["simbrief_plan"] = plan
@@ -446,8 +476,6 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": f"Interner Fehler: {exc}"}).encode("utf-8"))
             return
 
-        # AeroDataBox-Abfrage: Fehler hier werfen die Antwort NICHT mehr komplett weg,
-        # sondern werden separat als ground_info_error mitgeliefert.
         try:
             matches = collect_gate_history(
                 plan["flight_number_candidates"],
@@ -458,8 +486,9 @@ class handler(BaseHTTPRequestHandler):
             if not matches:
                 response_body["ground_info_error"] = (
                     f"Keine Live-/Terminaldaten fuer {', '.join(plan['flight_number_candidates'])} "
-                    f"in den letzten {range_days} Tagen gefunden. Moeglich: Flughafen liefert keine "
-                    f"Gate-Daten, oder der Flug liegt ausserhalb des vom Free-Tier abgedeckten Zeitfensters."
+                    f"in den letzten {range_days} Tagen gefunden (auch nicht ueber die Flughafen-"
+                    f"Abflugtafel). Moeglich: der Flughafen liefert grundsaetzlich keine Gate-Daten "
+                    f"an AeroDataBox, oder der Flug liegt ausserhalb des Free-Tier-Zeitfensters."
                 )
                 response_body["ground_info_list"] = []
             else:
@@ -476,7 +505,7 @@ class handler(BaseHTTPRequestHandler):
 
         response_body["fetched_at"] = datetime.now(timezone.utc).isoformat()
 
-        self.send_response(status_code)
+        self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(response_body).encode("utf-8"))
