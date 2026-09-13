@@ -1,18 +1,20 @@
 """
 Vercel Serverless Function: /api/lookup
 -----------------------------------------
-v2 Aenderungen:
-- Flugnummer wird jetzt explizit aus general.icao_airline + general.flight_number
-  gebildet (SimBrief-Flugnummer), NICHT mehr aus atc.callsign. Das Callsign
-  (z.B. bei Lufthansa oft "LUFTHANSA 1788" oder abweichend) ist NICHT identisch
-  mit der oeffentlichen Flugnummer (z.B. DLH1788 / LH1788) und fuehrte bei
-  AeroDataBox zu falschen oder keinen Treffern.
-- Historische/datumsspezifische Abfrage: nutzt jetzt den AeroDataBox-Endpoint
-  /flights/number/{FLUGNUMMER}/{DATUM}, mit dem geplanten SimBrief-Abflugdatum
-  als Datum. Fallback auf den Endpoint ohne Datum (aktuelle/naechste Fluege),
-  falls kein Datum ermittelbar ist oder die datumsspezifische Abfrage leer bleibt.
-- Erweiterter SimBrief-Datenextrakt: Distanz, Flugzeit, Reiseflughoehe, Treibstoff,
-  Passagiere/Fracht, Crew, Wetter (METAR) an Abflug/Ziel, Callsign als Zusatzinfo.
+v3 Aenderungen (Bugfix):
+- Robuste _d()-Hilfsfunktion: SimBrief liefert verschachtelte Felder (z.B. navlog,
+  crew, weights) je nach Flugplan manchmal als dict, manchmal als Liste
+  (v.a. wenn nur 1 Element vorhanden ist, wandelt die XML->JSON-Konvertierung
+  von SimBrief das Element nicht in eine Liste um - oder umgekehrt). Jeder
+  Zugriff auf verschachtelte Objekte laeuft jetzt durch _d(), das IMMER ein
+  dict zurueckgibt (leeres dict als Fallback), unabhaengig vom tatsaechlichen
+  Typ. Das behebt den Fehler "'list' object has no attribute 'get'".
+- Flugnummer weiterhin aus general.icao_airline + general.flight_number
+  (NICHT atc.callsign).
+- Historische/datumsspezifische Abfrage ueber AeroDataBox-Endpoint mit Datum,
+  Fallback auf Endpoint ohne Datum.
+- Erweiterte SimBrief-Datenextraktion (Distanz, Flugzeit, Hoehe, Fuel, Pax,
+  Crew, METAR, Route, Alternate) - jetzt fehlerresistent.
 
 WICHTIG: RAPIDAPI_KEY wird als Vercel Environment Variable gesetzt,
 ist serverseitig und landet NIE im Browser-Bundle.
@@ -36,6 +38,31 @@ class UpstreamError(Exception):
     def __init__(self, message, status_code=502):
         super().__init__(message)
         self.status_code = status_code
+
+
+def _d(value):
+    """Gibt IMMER ein dict zurueck. SimBrief liefert verschachtelte Felder
+    je nach Flugplan-Inhalt manchmal als dict, manchmal als Liste (z.B. bei
+    genau einem Navlog-Fix) oder None. Damit .get(...) darauf nie crasht,
+    wird hier defensiv normalisiert: dict -> unveraendert, nicht-leere Liste
+    -> erstes Element (falls dict) sonst {}, alles andere -> {}."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        if value and isinstance(value[0], dict):
+            return value[0]
+        return {}
+    return {}
+
+
+def _l(value):
+    """Gibt IMMER eine Liste zurueck, unabhaengig davon ob SimBrief ein
+    einzelnes dict oder eine Liste von dicts liefert."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return []
 
 
 def _get_json(url, headers=None, timeout=10):
@@ -80,10 +107,9 @@ def _seconds_to_hhmm(seconds):
 
 def fetch_simbrief_plan(username):
     """Holt den SimBrief-Flugplan. Extrahiert die ECHTE Flugnummer
-    (general.icao_airline + general.flight_number), NICHT das ATC-Callsign,
-    da beide bei vielen Airlines (z.B. Lufthansa) voneinander abweichen.
-    Zusaetzlich werden zahlreiche weitere Flugplandetails extrahiert
-    (Distanz, Flugzeit, Reiseflughoehe, Treibstoff, Crew, Wetter, Route)."""
+    (general.icao_airline + general.flight_number), NICHT das ATC-Callsign.
+    Alle verschachtelten Zugriffe laufen durch _d()/_l(), damit abweichende
+    SimBrief-JSON-Formen (dict vs. Liste bei Einzelelementen) nicht crashen."""
     if not username or not username.strip():
         raise UpstreamError("SimBrief-Username fehlt.", 400)
 
@@ -95,23 +121,26 @@ def fetch_simbrief_plan(username):
             f"SimBrief antwortete mit Status {status}. Username pruefen.", status
         )
 
-    if isinstance(data, dict) and data.get("fetch", {}).get("status") == "Error":
+    if isinstance(data, dict) and _d(data.get("fetch")).get("status") == "Error":
         raise UpstreamError(
             "Kein aktueller Flugplan fuer diesen SimBrief-User gefunden.", 404
         )
 
-    try:
-        origin = data["origin"]
-        destination = data["destination"]
-        general = data["general"]
-        atc = data.get("atc", {})
-    except (KeyError, TypeError):
+    if not isinstance(data, dict):
+        raise UpstreamError("SimBrief-Antwort hatte unerwartetes Format.", 502)
+
+    origin = _d(data.get("origin"))
+    destination = _d(data.get("destination"))
+    general = _d(data.get("general"))
+    atc = _d(data.get("atc"))
+
+    if not origin or not destination or not general:
         raise UpstreamError("SimBrief-Antwort konnte nicht geparst werden.", 502)
 
-    icao_airline = (general.get("icao_airline") or "").strip()
-    flight_num_only = (general.get("flight_number") or "").strip()
+    icao_airline = str(general.get("icao_airline") or "").strip()
+    flight_num_only = str(general.get("flight_number") or "").strip()
     flight_number = f"{icao_airline}{flight_num_only}".strip()
-    callsign = (atc.get("callsign") or "").strip()
+    callsign = str(atc.get("callsign") or "").strip()
 
     if not flight_number:
         raise UpstreamError(
@@ -127,21 +156,23 @@ def fetch_simbrief_plan(username):
         except (ValueError, TypeError):
             dep_date_utc = None
 
-    aircraft = data.get("aircraft", {})
-    weights = data.get("weights", {})
-    fuel = data.get("fuel", {})
-    times = data.get("times", {})
-    crew = data.get("crew", {})
+    aircraft = _d(data.get("aircraft"))
+    weights = _d(data.get("weights"))
+    fuel = _d(data.get("fuel"))
+    times = _d(data.get("times"))
+    crew = _d(data.get("crew"))
+    alternate = _d(data.get("alternate"))
+    params = _d(data.get("params"))
+
     weather_orig = origin.get("metar")
     weather_dest = destination.get("metar")
-    alternate = data.get("alternate", {})
-    params = data.get("params", {})
 
     route_navlog = []
-    navlog_fixes = data.get("navlog", {}).get("fix", []) if isinstance(data.get("navlog"), dict) else []
-    if isinstance(navlog_fixes, dict):
-        navlog_fixes = [navlog_fixes]
+    navlog_container = _d(data.get("navlog"))
+    navlog_fixes = _l(navlog_container.get("fix"))
     for fix in navlog_fixes:
+        if not isinstance(fix, dict):
+            continue
         ident = fix.get("ident")
         fix_type = fix.get("type")
         if ident and fix_type in ("wpt", "apt", "vor", "ndb"):
@@ -153,7 +184,7 @@ def fetch_simbrief_plan(username):
         "airline_name": (general.get("icao_airline") or general.get("airline") or "unbekannt"),
         "aircraft": aircraft.get("name", "unbekannt"),
         "aircraft_icao": aircraft.get("icaocode"),
-        "aircraft_reg": data.get("params", {}).get("registration") or aircraft.get("reg"),
+        "aircraft_reg": params.get("registration") or aircraft.get("reg"),
         "departure_date_utc": dep_date_utc,
         "route_string": general.get("route"),
         "route_waypoints": route_navlog[:12],
@@ -161,7 +192,6 @@ def fetch_simbrief_plan(username):
         "cruise_mach": general.get("cruise_mach"),
         "air_distance_nm": _safe_float(general.get("air_distance")),
         "route_distance_nm": _safe_float(general.get("route_distance")),
-        "flight_time_hhmm": _seconds_to_hhmm(general.get("total_burn") and times.get("est_time_enroute")),
         "block_time_hhmm": _seconds_to_hhmm(times.get("est_block")),
         "passengers": _safe_int(weights.get("pax_count")),
         "cargo_kg": _safe_float(weights.get("cargo")),
@@ -193,16 +223,9 @@ def fetch_simbrief_plan(username):
 
 
 def fetch_flight_status(flight_number, departure_date_utc=None):
-    """Fragt AeroDataBox nach dem Flugstatus ab.
-
-    Wenn ein Abflugdatum vorliegt (z.B. aus einem SimBrief-Plan mit fixem
-    Datum, auch in der Vergangenheit), wird der datumsspezifische Endpoint
-    /flights/number/{FLUGNUMMER}/{DATUM} verwendet - das deckt sowohl
-    zukuenftige als auch HISTORISCHE Flugdaten ab.
-
-    Ohne Datum wird auf den relativen Endpoint (aktuelle/naechste Tage)
-    zurueckgefallen.
-    """
+    """Fragt AeroDataBox nach dem Flugstatus ab. Mit Datum -> datumsspezifischer/
+    historischer Endpoint. Ohne/bei leerem Ergebnis -> Fallback auf relative
+    Abfrage (aktuelle/naechste Fluege)."""
     if not RAPIDAPI_KEY:
         raise UpstreamError("Kein RAPIDAPI_KEY in den Vercel Env-Vars konfiguriert.", 500)
     if not flight_number:
@@ -225,7 +248,7 @@ def fetch_flight_status(flight_number, departure_date_utc=None):
                 429,
             )
         if status == 200 and data:
-            return data
+            return data if isinstance(data, list) else [data]
 
     url = f"{ADB_BASE}/flights/number/{clean_number}?{query}"
     status, data = _get_json(url, headers=headers)
@@ -245,37 +268,46 @@ def fetch_flight_status(flight_number, departure_date_utc=None):
     if status != 200:
         raise UpstreamError(f"AeroDataBox antwortete mit Status {status}.", status)
 
-    return data
+    return data if isinstance(data, list) else [data]
 
 
 def pick_best_match(flights, origin_icao, destination_icao):
     for f in flights:
-        dep_icao = f.get("departure", {}).get("airport", {}).get("icao")
-        arr_icao = f.get("arrival", {}).get("airport", {}).get("icao")
+        if not isinstance(f, dict):
+            continue
+        dep_airport = _d(_d(f.get("departure")).get("airport"))
+        arr_airport = _d(_d(f.get("arrival")).get("airport"))
+        dep_icao = dep_airport.get("icao")
+        arr_icao = arr_airport.get("icao")
         if dep_icao == origin_icao and arr_icao == destination_icao:
             return f
-    return flights[0]
+    return flights[0] if flights and isinstance(flights[0], dict) else {}
 
 
 def extract_ground_info(flight):
-    dep = flight.get("departure", {})
-    arr = flight.get("arrival", {})
+    dep = _d(flight.get("departure"))
+    arr = _d(flight.get("arrival"))
 
     def gate_block(block):
+        airport = _d(block.get("airport"))
+        scheduled = _d(block.get("scheduledTime"))
         return {
-            "airport_icao": block.get("airport", {}).get("icao"),
-            "airport_iata": block.get("airport", {}).get("iata"),
-            "airport_name": block.get("airport", {}).get("name"),
+            "airport_icao": airport.get("icao"),
+            "airport_iata": airport.get("iata"),
+            "airport_name": airport.get("name"),
             "terminal": block.get("terminal") or None,
             "gate": block.get("gate") or None,
-            "scheduled_time_local": (block.get("scheduledTime", {}) or {}).get("local"),
+            "scheduled_time_local": scheduled.get("local"),
         }
+
+    airline = _d(flight.get("airline"))
+    aircraft = _d(flight.get("aircraft"))
 
     return {
         "flight_number": flight.get("number"),
         "status": flight.get("status"),
-        "airline": (flight.get("airline") or {}).get("name"),
-        "aircraft_model": (flight.get("aircraft") or {}).get("model"),
+        "airline": airline.get("name"),
+        "aircraft_model": aircraft.get("model"),
         "departure": gate_block(dep),
         "arrival": gate_block(arr),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
