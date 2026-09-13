@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "public/**", "use": "@vercel/static" },
+    { "src": "api/lookup.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/api/lookup", "dest": "api/lookup.py" },
+    { "src": "/(.*)", "dest": "public/$1" }
+  ]
+}

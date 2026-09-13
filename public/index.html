@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimBrief &rarr; Parkposition Finder</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>SimBrief &rarr; Parkposition Finder</h1>
+      <p class="subtitle">SimBrief-Flugplan laden, Gate/Terminal per Flugnummer via AeroDataBox auflösen.</p>
+    </header>
+
+    <section class="card">
+      <label for="username">SimBrief Username</label>
+      <div class="input-row">
+        <input type="text" id="username" placeholder="z.B. Manu" autocomplete="off">
+        <button id="lookupBtn">Abfragen</button>
+      </div>
+      <p class="hint">Es wird dein zuletzt in SimBrief erstellter Flugplan geladen.</p>
+    </section>
+
+    <section id="status" class="status hidden"></section>
+
+    <section id="result" class="result hidden">
+      <div class="flight-header">
+        <h2 id="flightNumber">-</h2>
+        <span id="aircraftType" class="badge">-</span>
+      </div>
+
+      <div class="route">
+        <div class="airport-block" id="depBlock">
+          <h3>Abflug</h3>
+          <p class="airport-name" id="depName">-</p>
+          <p class="icao" id="depIcao">-</p>
+          <div class="ground-info">
+            <div><span class="label">Terminal</span><span class="value" id="depTerminal">-</span></div>
+            <div><span class="label">Gate</span><span class="value" id="depGate">-</span></div>
+          </div>
+        </div>
+
+        <div class="arrow">&rarr;</div>
+
+        <div class="airport-block" id="arrBlock">
+          <h3>Ankunft</h3>
+          <p class="airport-name" id="arrName">-</p>
+          <p class="icao" id="arrIcao">-</p>
+          <div class="ground-info">
+            <div><span class="label">Terminal</span><span class="value" id="arrTerminal">-</span></div>
+            <div><span class="label">Gate</span><span class="value" id="arrGate">-</span></div>
+          </div>
+        </div>
+      </div>
+
+      <p class="fetched-note" id="fetchedNote"></p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
