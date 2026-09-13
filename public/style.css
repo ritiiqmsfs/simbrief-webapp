@@ -491,3 +491,80 @@ header h1 {
     flex-direction: column;
   }
 }
+
+
+.gate-info-note {
+  background: rgba(245,158,11,0.1);
+  border: 1px solid rgba(245,158,11,0.25);
+  color: var(--warning);
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.gate-history-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+
+.section-title {
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.gate-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--bg-card-alt);
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  font-size: 0.82rem;
+}
+
+.history-row-latest {
+  border-color: var(--accent);
+  background: rgba(59,130,246,0.08);
+}
+
+.history-date {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: "Consolas", monospace;
+}
+
+.history-gate {
+  color: var(--text-secondary);
+}
+
+.history-status {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-align: right;
+  text-transform: capitalize;
+}
+
+@media (max-width: 640px) {
+  .history-row {
+    grid-template-columns: 1fr;
+    text-align: left;
+  }
+  .history-status {
+    text-align: left;
+  }
+}

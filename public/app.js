@@ -20,6 +20,16 @@ function setText(id, value, fallback = "-") {
 }
 
 function fillGroundBlock(prefix, block) {
+  if (!block) {
+    setText(`${prefix}Name`, null, "keine Daten");
+    setText(`${prefix}Icao`, null, "-");
+    document.getElementById(`${prefix}Terminal`).textContent = "keine Daten";
+    document.getElementById(`${prefix}Terminal`).classList.add("missing");
+    document.getElementById(`${prefix}Gate`).textContent = "keine Daten";
+    document.getElementById(`${prefix}Gate`).classList.add("missing");
+    setText(`${prefix}Time`, null, "keine Daten");
+    return;
+  }
   setText(`${prefix}Name`, block.airport_name || block.airport_icao);
   setText(`${prefix}Icao`, block.airport_icao);
 
@@ -42,7 +52,7 @@ function fillGroundBlock(prefix, block) {
     gateEl.classList.add("missing");
   }
 
-  setText(`${prefix}Time`, block.scheduled_time_local ? block.scheduled_time_local.split(" ")[1] || block.scheduled_time_local : null, "keine Daten");
+  setText(`${prefix}Time`, block.scheduled_time_local ? (block.scheduled_time_local.split("T")[1] || block.scheduled_time_local) : null, "keine Daten");
 }
 
 function fillPlanExtras(plan) {
@@ -104,7 +114,9 @@ function fillPlanExtras(plan) {
   }
 
   const callsignNote = document.getElementById("callsignNote");
-  callsignNote.textContent = plan.callsign ? `Callsign: ${plan.callsign}` : "";
+  const candidates = plan.flight_number_candidates || [];
+  const candidateNote = candidates.length > 1 ? ` · geprüfte Formate: ${candidates.join(", ")}` : "";
+  callsignNote.textContent = (plan.callsign ? `Callsign: ${plan.callsign}` : "") + candidateNote;
 
   setText("aircraftReg", plan.aircraft_reg);
   const regEl = document.getElementById("aircraftReg");
@@ -113,6 +125,46 @@ function fillPlanExtras(plan) {
   } else {
     regEl.classList.add("hidden");
   }
+}
+
+function renderGateHistory(groundList) {
+  const container = document.getElementById("gateHistoryList");
+  container.innerHTML = "";
+
+  if (!groundList || groundList.length === 0) {
+    return;
+  }
+
+  groundList.forEach((g, idx) => {
+    const row = document.createElement("div");
+    row.className = "history-row" + (idx === 0 ? " history-row-latest" : "");
+
+    const dateSpan = document.createElement("span");
+    dateSpan.className = "history-date";
+    dateSpan.textContent = g.date_local || "Datum unbekannt";
+
+    const depSpan = document.createElement("span");
+    depSpan.className = "history-gate";
+    const depTerm = g.departure && g.departure.terminal ? `T${g.departure.terminal}` : "–";
+    const depGate = g.departure && g.departure.gate ? g.departure.gate : "kein Gate";
+    depSpan.textContent = `Abflug: ${depTerm} / ${depGate}`;
+
+    const arrSpan = document.createElement("span");
+    arrSpan.className = "history-gate";
+    const arrTerm = g.arrival && g.arrival.terminal ? `T${g.arrival.terminal}` : "–";
+    const arrGate = g.arrival && g.arrival.gate ? g.arrival.gate : "kein Gate";
+    arrSpan.textContent = `Ankunft: ${arrTerm} / ${arrGate}`;
+
+    const statusSpan = document.createElement("span");
+    statusSpan.className = "history-status";
+    statusSpan.textContent = g.status || "";
+
+    row.appendChild(dateSpan);
+    row.appendChild(depSpan);
+    row.appendChild(arrSpan);
+    row.appendChild(statusSpan);
+    container.appendChild(row);
+  });
 }
 
 async function runLookup() {
@@ -124,13 +176,13 @@ async function runLookup() {
 
   lookupBtn.disabled = true;
   resultEl.classList.add("hidden");
-  showStatus("Lade SimBrief-Flugplan und Live-Daten ...", "info");
+  showStatus("Lade SimBrief-Flugplan und Live-Daten der letzten Tage ...", "info");
 
   try {
     const resp = await fetch("/api/lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ simbrief_username: username }),
+      body: JSON.stringify({ simbrief_username: username, range_days: 4 }),
     });
 
     const data = await resp.json();
@@ -140,21 +192,43 @@ async function runLookup() {
       return;
     }
 
+    const plan = data.simbrief_plan;
+    if (!plan) {
+      showStatus("SimBrief-Flugplan konnte nicht geladen werden.", "error");
+      return;
+    }
+
     hideStatus();
 
-    const plan = data.simbrief_plan;
-    const ground = data.ground_info;
+    const groundList = data.ground_info_list || [];
+    const latest = groundList[0] || null;
 
-    setText("flightNumber", ground.flight_number || plan.flight_number);
-    setText("airlineName", ground.airline || plan.airline_name);
-    setText("aircraftType", ground.aircraft_model || plan.aircraft);
-    setText("statusBadge", ground.status || "geplant");
+    setText("flightNumber", (latest && latest.flight_number) || plan.flight_number);
+    setText("airlineName", (latest && latest.airline) || plan.airline_name);
+    setText("aircraftType", (latest && latest.aircraft_model) || plan.aircraft);
+    setText("statusBadge", (latest && latest.status) || "geplant");
 
-    fillGroundBlock("dep", ground.departure);
-    fillGroundBlock("arr", ground.arrival);
+    fillGroundBlock("dep", latest ? latest.departure : null);
+    fillGroundBlock("arr", latest ? latest.arrival : null);
     fillPlanExtras(plan);
+    renderGateHistory(groundList);
 
-    const fetchedDate = new Date(ground.fetched_at);
+    const gateNoteEl = document.getElementById("gateInfoNote");
+    if (data.ground_info_error) {
+      gateNoteEl.textContent = data.ground_info_error;
+      gateNoteEl.classList.remove("hidden");
+    } else {
+      gateNoteEl.classList.add("hidden");
+    }
+
+    const historySection = document.getElementById("gateHistorySection");
+    if (groundList.length > 0) {
+      historySection.classList.remove("hidden");
+    } else {
+      historySection.classList.add("hidden");
+    }
+
+    const fetchedDate = new Date(data.fetched_at);
     setText("fetchedNote", `Abgerufen: ${fetchedDate.toLocaleString("de-DE")} · Quelle: SimBrief & AeroDataBox`);
 
     resultEl.classList.remove("hidden");

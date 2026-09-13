@@ -14,7 +14,7 @@
     <header>
       <div class="header-icon">&#9992;</div>
       <h1>SimBrief <span class="arrow-accent">&rarr;</span> Parkposition Finder</h1>
-      <p class="subtitle">Flugplan importieren, Gate &amp; Terminal live per Flugnummer auflösen.</p>
+      <p class="subtitle">Flugplan importieren, Gate &amp; Terminal live per Flugnummer auflösen — inkl. Historie der letzten Tage.</p>
     </header>
 
     <section class="card search-card">
@@ -23,7 +23,7 @@
         <input type="text" id="username" placeholder="z.B. Manu" autocomplete="off">
         <button id="lookupBtn"><span class="btn-icon">&#128269;</span> Abfragen</button>
       </div>
-      <p class="hint">Es wird dein zuletzt in SimBrief erstellter Flugplan geladen — inkl. Datum, damit auch vergangene Flüge korrekt aufgelöst werden.</p>
+      <p class="hint">Es wird dein zuletzt in SimBrief erstellter Flugplan geladen. Gate-Daten werden über mehrere Formate (IATA/ICAO) und die letzten Tage geprüft.</p>
     </section>
 
     <section id="status" class="status hidden"></section>
@@ -44,6 +44,8 @@
           <span id="aircraftReg" class="meta-chip hidden"></span>
         </div>
       </div>
+
+      <p id="gateInfoNote" class="gate-info-note hidden"></p>
 
       <div class="route">
         <div class="airport-block" id="depBlock">
@@ -90,6 +92,11 @@
           </div>
         </div>
       </div>
+
+      <section id="gateHistorySection" class="gate-history-section hidden">
+        <h3 class="section-title">Gate-Historie (letzte Tage)</h3>
+        <div id="gateHistoryList" class="gate-history-list"></div>
+      </section>
 
       <div class="details-grid">
         <div class="detail-card">
