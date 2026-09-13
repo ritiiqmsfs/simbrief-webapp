@@ -1,10 +1,18 @@
 """
 Vercel Serverless Function: /api/lookup
 -----------------------------------------
-Ablauf:
-1. SimBrief-Flugplan des Users abrufen (kein Key noetig)
-2. Flugnummer bei AeroDataBox (RapidAPI Free Tier) abfragen
-3. Passenden Flug (Route-Match) auswaehlen, Terminal/Gate extrahieren
+v2 Aenderungen:
+- Flugnummer wird jetzt explizit aus general.icao_airline + general.flight_number
+  gebildet (SimBrief-Flugnummer), NICHT mehr aus atc.callsign. Das Callsign
+  (z.B. bei Lufthansa oft "LUFTHANSA 1788" oder abweichend) ist NICHT identisch
+  mit der oeffentlichen Flugnummer (z.B. DLH1788 / LH1788) und fuehrte bei
+  AeroDataBox zu falschen oder keinen Treffern.
+- Historische/datumsspezifische Abfrage: nutzt jetzt den AeroDataBox-Endpoint
+  /flights/number/{FLUGNUMMER}/{DATUM}, mit dem geplanten SimBrief-Abflugdatum
+  als Datum. Fallback auf den Endpoint ohne Datum (aktuelle/naechste Fluege),
+  falls kein Datum ermittelbar ist oder die datumsspezifische Abfrage leer bleibt.
+- Erweiterter SimBrief-Datenextrakt: Distanz, Flugzeit, Reiseflughoehe, Treibstoff,
+  Passagiere/Fracht, Crew, Wetter (METAR) an Abflug/Ziel, Callsign als Zusatzinfo.
 
 WICHTIG: RAPIDAPI_KEY wird als Vercel Environment Variable gesetzt,
 ist serverseitig und landet NIE im Browser-Bundle.
@@ -47,7 +55,35 @@ def _get_json(url, headers=None, timeout=10):
         raise UpstreamError(f"Verbindung fehlgeschlagen: {e.reason}", 502)
 
 
+def _safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _seconds_to_hhmm(seconds):
+    total = _safe_int(seconds)
+    if total is None:
+        return None
+    h = total // 3600
+    m = (total % 3600) // 60
+    return f"{h:02d}:{m:02d}"
+
+
 def fetch_simbrief_plan(username):
+    """Holt den SimBrief-Flugplan. Extrahiert die ECHTE Flugnummer
+    (general.icao_airline + general.flight_number), NICHT das ATC-Callsign,
+    da beide bei vielen Airlines (z.B. Lufthansa) voneinander abweichen.
+    Zusaetzlich werden zahlreiche weitere Flugplandetails extrahiert
+    (Distanz, Flugzeit, Reiseflughoehe, Treibstoff, Crew, Wetter, Route)."""
     if not username or not username.strip():
         raise UpstreamError("SimBrief-Username fehlt.", 400)
 
@@ -72,39 +108,126 @@ def fetch_simbrief_plan(username):
     except (KeyError, TypeError):
         raise UpstreamError("SimBrief-Antwort konnte nicht geparst werden.", 502)
 
-    flight_number_raw = atc.get("callsign") or (
-        general.get("icao_airline", "") + general.get("flight_number", "")
-    )
+    icao_airline = (general.get("icao_airline") or "").strip()
+    flight_num_only = (general.get("flight_number") or "").strip()
+    flight_number = f"{icao_airline}{flight_num_only}".strip()
+    callsign = (atc.get("callsign") or "").strip()
+
+    if not flight_number:
+        raise UpstreamError(
+            "Konnte keine Flugnummer aus general.icao_airline/flight_number "
+            "extrahieren.", 502
+        )
+
+    dep_epoch = origin.get("plan_time_departure")
+    dep_date_utc = None
+    if dep_epoch:
+        try:
+            dep_date_utc = datetime.fromtimestamp(int(dep_epoch), tz=timezone.utc).strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            dep_date_utc = None
+
+    aircraft = data.get("aircraft", {})
+    weights = data.get("weights", {})
+    fuel = data.get("fuel", {})
+    times = data.get("times", {})
+    crew = data.get("crew", {})
+    weather_orig = origin.get("metar")
+    weather_dest = destination.get("metar")
+    alternate = data.get("alternate", {})
+    params = data.get("params", {})
+
+    route_navlog = []
+    navlog_fixes = data.get("navlog", {}).get("fix", []) if isinstance(data.get("navlog"), dict) else []
+    if isinstance(navlog_fixes, dict):
+        navlog_fixes = [navlog_fixes]
+    for fix in navlog_fixes:
+        ident = fix.get("ident")
+        fix_type = fix.get("type")
+        if ident and fix_type in ("wpt", "apt", "vor", "ndb"):
+            route_navlog.append(ident)
 
     return {
-        "flight_number": flight_number_raw.strip(),
-        "aircraft": data.get("aircraft", {}).get("name", "unbekannt"),
+        "flight_number": flight_number,
+        "callsign": callsign,
+        "airline_name": (general.get("icao_airline") or general.get("airline") or "unbekannt"),
+        "aircraft": aircraft.get("name", "unbekannt"),
+        "aircraft_icao": aircraft.get("icaocode"),
+        "aircraft_reg": data.get("params", {}).get("registration") or aircraft.get("reg"),
+        "departure_date_utc": dep_date_utc,
+        "route_string": general.get("route"),
+        "route_waypoints": route_navlog[:12],
+        "initial_altitude_ft": general.get("initial_altitude"),
+        "cruise_mach": general.get("cruise_mach"),
+        "air_distance_nm": _safe_float(general.get("air_distance")),
+        "route_distance_nm": _safe_float(general.get("route_distance")),
+        "flight_time_hhmm": _seconds_to_hhmm(general.get("total_burn") and times.get("est_time_enroute")),
+        "block_time_hhmm": _seconds_to_hhmm(times.get("est_block")),
+        "passengers": _safe_int(weights.get("pax_count")),
+        "cargo_kg": _safe_float(weights.get("cargo")),
+        "payload_kg": _safe_float(weights.get("payload")),
+        "takeoff_fuel_kg": _safe_float(fuel.get("plan_takeoff")),
+        "trip_fuel_kg": _safe_float(fuel.get("plan_trip")),
+        "reserve_fuel_kg": _safe_float(fuel.get("plan_reserve")),
+        "captain": crew.get("pic") or None,
+        "dispatcher": crew.get("dxname") or None,
         "origin": {
             "icao": origin.get("icao_code"),
             "iata": origin.get("iata_code"),
             "name": origin.get("name"),
+            "elevation_ft": _safe_float(origin.get("elevation")),
+            "metar": weather_orig,
         },
         "destination": {
             "icao": destination.get("icao_code"),
             "iata": destination.get("iata_code"),
             "name": destination.get("name"),
+            "elevation_ft": _safe_float(destination.get("elevation")),
+            "metar": weather_dest,
         },
+        "alternate": {
+            "icao": alternate.get("icao_code"),
+            "name": alternate.get("name"),
+        } if alternate.get("icao_code") else None,
     }
 
 
-def fetch_flight_status(flight_number):
+def fetch_flight_status(flight_number, departure_date_utc=None):
+    """Fragt AeroDataBox nach dem Flugstatus ab.
+
+    Wenn ein Abflugdatum vorliegt (z.B. aus einem SimBrief-Plan mit fixem
+    Datum, auch in der Vergangenheit), wird der datumsspezifische Endpoint
+    /flights/number/{FLUGNUMMER}/{DATUM} verwendet - das deckt sowohl
+    zukuenftige als auch HISTORISCHE Flugdaten ab.
+
+    Ohne Datum wird auf den relativen Endpoint (aktuelle/naechste Tage)
+    zurueckgefallen.
+    """
     if not RAPIDAPI_KEY:
         raise UpstreamError("Kein RAPIDAPI_KEY in den Vercel Env-Vars konfiguriert.", 500)
     if not flight_number:
         raise UpstreamError("Keine Flugnummer vorhanden.", 400)
 
     clean_number = flight_number.replace(" ", "").upper()
-    url = f"{ADB_BASE}/flights/number/{clean_number}?withAircraftImage=false&withLocation=false"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
         "X-RapidAPI-Host": RAPIDAPI_HOST,
     }
+    query = "withAircraftImage=false&withLocation=false"
 
+    if departure_date_utc:
+        url = f"{ADB_BASE}/flights/number/{clean_number}/{departure_date_utc}?{query}"
+        status, data = _get_json(url, headers=headers)
+
+        if status == 429:
+            raise UpstreamError(
+                "AeroDataBox Rate-Limit erreicht (Free Tier: 1 Request/Sek, 400 Units/Monat).",
+                429,
+            )
+        if status == 200 and data:
+            return data
+
+    url = f"{ADB_BASE}/flights/number/{clean_number}?{query}"
     status, data = _get_json(url, headers=headers)
 
     if status == 429:
@@ -113,7 +236,12 @@ def fetch_flight_status(flight_number):
             429,
         )
     if status == 404 or not data:
-        raise UpstreamError(f"Keine Daten fuer Flug {clean_number} gefunden.", 404)
+        raise UpstreamError(
+            f"Keine Daten fuer Flug {clean_number}"
+            + (f" am {departure_date_utc}" if departure_date_utc else "")
+            + " gefunden.",
+            404,
+        )
     if status != 200:
         raise UpstreamError(f"AeroDataBox antwortete mit Status {status}.", status)
 
@@ -140,6 +268,7 @@ def extract_ground_info(flight):
             "airport_name": block.get("airport", {}).get("name"),
             "terminal": block.get("terminal") or None,
             "gate": block.get("gate") or None,
+            "scheduled_time_local": (block.get("scheduledTime", {}) or {}).get("local"),
         }
 
     return {
@@ -167,7 +296,7 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             plan = fetch_simbrief_plan(username)
-            flights = fetch_flight_status(plan["flight_number"])
+            flights = fetch_flight_status(plan["flight_number"], plan.get("departure_date_utc"))
             best = pick_best_match(flights, plan["origin"]["icao"], plan["destination"]["icao"])
             ground_info = extract_ground_info(best)
             response_body = {"simbrief_plan": plan, "ground_info": ground_info}

@@ -5,58 +5,157 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SimBrief &rarr; Parkposition Finder</title>
 <link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
 </head>
 <body>
+  <div class="bg-decoration"></div>
+
   <main class="container">
     <header>
-      <h1>SimBrief &rarr; Parkposition Finder</h1>
-      <p class="subtitle">SimBrief-Flugplan laden, Gate/Terminal per Flugnummer via AeroDataBox auflösen.</p>
+      <div class="header-icon">&#9992;</div>
+      <h1>SimBrief <span class="arrow-accent">&rarr;</span> Parkposition Finder</h1>
+      <p class="subtitle">Flugplan importieren, Gate &amp; Terminal live per Flugnummer auflösen.</p>
     </header>
 
-    <section class="card">
+    <section class="card search-card">
       <label for="username">SimBrief Username</label>
       <div class="input-row">
         <input type="text" id="username" placeholder="z.B. Manu" autocomplete="off">
-        <button id="lookupBtn">Abfragen</button>
+        <button id="lookupBtn"><span class="btn-icon">&#128269;</span> Abfragen</button>
       </div>
-      <p class="hint">Es wird dein zuletzt in SimBrief erstellter Flugplan geladen.</p>
+      <p class="hint">Es wird dein zuletzt in SimBrief erstellter Flugplan geladen — inkl. Datum, damit auch vergangene Flüge korrekt aufgelöst werden.</p>
     </section>
 
     <section id="status" class="status hidden"></section>
 
     <section id="result" class="result hidden">
-      <div class="flight-header">
-        <h2 id="flightNumber">-</h2>
-        <span id="aircraftType" class="badge">-</span>
+
+      <div class="flight-summary-card">
+        <div class="flight-summary-top">
+          <div>
+            <span class="flight-number-big" id="flightNumber">-</span>
+            <span class="callsign" id="callsignNote"></span>
+          </div>
+          <span id="statusBadge" class="badge status-badge">-</span>
+        </div>
+        <div class="flight-summary-meta">
+          <span id="airlineName" class="meta-chip">-</span>
+          <span id="aircraftType" class="meta-chip">-</span>
+          <span id="aircraftReg" class="meta-chip hidden"></span>
+        </div>
       </div>
 
       <div class="route">
         <div class="airport-block" id="depBlock">
-          <h3>Abflug</h3>
+          <div class="airport-block-header">
+            <h3>Abflug</h3>
+            <span class="dep-arr-icon">&#128666;&#65039;</span>
+          </div>
           <p class="airport-name" id="depName">-</p>
           <p class="icao" id="depIcao">-</p>
           <div class="ground-info">
             <div><span class="label">Terminal</span><span class="value" id="depTerminal">-</span></div>
             <div><span class="label">Gate</span><span class="value" id="depGate">-</span></div>
+            <div><span class="label">Geplante Zeit</span><span class="value" id="depTime">-</span></div>
+            <div><span class="label">Elevation</span><span class="value" id="depElev">-</span></div>
+          </div>
+          <div class="metar-box" id="depMetarBox">
+            <span class="metar-label">METAR</span>
+            <span class="metar-text" id="depMetar">-</span>
           </div>
         </div>
 
-        <div class="arrow">&rarr;</div>
+        <div class="arrow-connector">
+          <div class="plane-icon">&#9992;&#65039;</div>
+          <div class="route-line"></div>
+          <span class="distance-label" id="distanceLabel">-</span>
+        </div>
 
         <div class="airport-block" id="arrBlock">
-          <h3>Ankunft</h3>
+          <div class="airport-block-header">
+            <h3>Ankunft</h3>
+            <span class="dep-arr-icon">&#127971;</span>
+          </div>
           <p class="airport-name" id="arrName">-</p>
           <p class="icao" id="arrIcao">-</p>
           <div class="ground-info">
             <div><span class="label">Terminal</span><span class="value" id="arrTerminal">-</span></div>
             <div><span class="label">Gate</span><span class="value" id="arrGate">-</span></div>
+            <div><span class="label">Geplante Zeit</span><span class="value" id="arrTime">-</span></div>
+            <div><span class="label">Elevation</span><span class="value" id="arrElev">-</span></div>
           </div>
+          <div class="metar-box" id="arrMetarBox">
+            <span class="metar-label">METAR</span>
+            <span class="metar-text" id="arrMetar">-</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="details-grid">
+        <div class="detail-card">
+          <span class="detail-icon">&#128207;</span>
+          <span class="detail-label">Flugstrecke</span>
+          <span class="detail-value" id="detDistance">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#9201;&#65039;</span>
+          <span class="detail-label">Blockzeit</span>
+          <span class="detail-value" id="detBlockTime">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#128200;</span>
+          <span class="detail-label">Reiseflughöhe</span>
+          <span class="detail-value" id="detAltitude">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#128171;</span>
+          <span class="detail-label">Mach-Zahl</span>
+          <span class="detail-value" id="detMach">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#9981;</span>
+          <span class="detail-label">Trip-Fuel</span>
+          <span class="detail-value" id="detTripFuel">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#128721;</span>
+          <span class="detail-label">Reserve-Fuel</span>
+          <span class="detail-value" id="detReserveFuel">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#128100;</span>
+          <span class="detail-label">Passagiere</span>
+          <span class="detail-value" id="detPax">-</span>
+        </div>
+        <div class="detail-card">
+          <span class="detail-icon">&#128230;</span>
+          <span class="detail-label">Fracht</span>
+          <span class="detail-value" id="detCargo">-</span>
+        </div>
+      </div>
+
+      <div class="extra-info-row">
+        <div class="extra-info-block" id="alternateBlock">
+          <span class="extra-info-title">Ausweichflughafen</span>
+          <span class="extra-info-value" id="alternateValue">-</span>
+        </div>
+        <div class="extra-info-block" id="routeBlock">
+          <span class="extra-info-title">Route</span>
+          <span class="extra-info-value route-text" id="routeValue">-</span>
+        </div>
+        <div class="extra-info-block" id="crewBlock">
+          <span class="extra-info-title">Crew / Dispatch</span>
+          <span class="extra-info-value" id="crewValue">-</span>
         </div>
       </div>
 
       <p class="fetched-note" id="fetchedNote"></p>
     </section>
   </main>
+
+  <footer class="page-footer">
+    <span>Daten: SimBrief &amp; AeroDataBox · Terminal/Gate nicht bei jedem Flughafen verfügbar</span>
+  </footer>
 
   <script src="app.js"></script>
 </body>
